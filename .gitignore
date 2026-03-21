@@ -1,0 +1,78 @@
+# ==============================
+# Python / Flask Backend
+# ==============================
+
+__pycache__/
+*.py[cod]
+*.pyd
+*.sqlite3
+*.db
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Flask specific
+instance/
+.webassets-cache
+
+# ==============================
+# Environment Variables
+# ==============================
+
+.env
+.env.*
+*.env
+
+# ==============================
+# Logs
+# ==============================
+
+*.log
+
+# ==============================
+# Frontend (React / Vite)
+# ==============================
+
+node_modules/
+dist/
+build/
+.vite/
+dist-ssr/
+
+# Lock unnecessary local files
+*.local
+
+# ==============================
+# IDE / Editor
+# ==============================
+
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# ==============================
+# OS Files
+# ==============================
+
+.DS_Store
+Thumbs.db
+
+# ==============================
+# Testing / Coverage
+# ==============================
+
+coverage/
+*.cover
+*.coverage
+
+# ==============================
+# Misc
+# ==============================
+
+*.tmp
+*.bak
+*.cache

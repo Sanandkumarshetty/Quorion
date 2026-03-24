@@ -1,115 +1,76 @@
-from database.session import SessionLocal
+from datetime import datetime
+
+from sqlalchemy.orm import joinedload
+
 from models.answer import Answer
 from models.submission import Submission
+from models.quiz import Quiz
 
 
-def create_submission(student_id, quiz_id):
-    db = SessionLocal()
-    try:
-        submission = Submission(student_id=student_id, quiz_id=quiz_id)
-        db.add(submission)
-        db.commit()
-        db.refresh(submission)
-        return submission
-    except Exception:
-        db.rollback()
-        raise
-    finally:
-        db.close()
+def get_latest_submission(db, quiz_id, student_id):
+    return (
+        db.query(Submission)
+        .options(joinedload(Submission.answers), joinedload(Submission.quiz).joinedload(Quiz.questions))
+        .filter(Submission.quiz_id == quiz_id, Submission.student_id == student_id)
+        .order_by(Submission.submission_id.desc())
+        .first()
+    )
 
 
-def save_answer(submission_id, question_id, selected_option):
-    db = SessionLocal()
-    try:
-        answer = (
-            db.query(Answer)
-            .filter(Answer.submission_id == submission_id, Answer.question_id == question_id)
-            .first()
-        )
-        if answer:
-            answer.selected_option = selected_option
-        else:
-            answer = Answer(
-                submission_id=submission_id,
-                question_id=question_id,
-                selected_option=selected_option,
-            )
-            db.add(answer)
-
-        db.commit()
-        db.refresh(answer)
-        return answer
-    except Exception:
-        db.rollback()
-        raise
-    finally:
-        db.close()
+def get_active_submission(db, quiz_id, student_id):
+    return (
+        db.query(Submission)
+        .options(joinedload(Submission.answers), joinedload(Submission.quiz).joinedload(Quiz.questions))
+        .filter(Submission.quiz_id == quiz_id, Submission.student_id == student_id, Submission.completion_time.is_(None))
+        .order_by(Submission.submission_id.desc())
+        .first()
+    )
 
 
-def get_submission_by_id(submission_id):
-    db = SessionLocal()
-    try:
-        return db.query(Submission).filter(Submission.submission_id == submission_id).first()
-    finally:
-        db.close()
+def get_completed_submission(db, quiz_id, student_id):
+    return (
+        db.query(Submission)
+        .filter(Submission.quiz_id == quiz_id, Submission.student_id == student_id, Submission.completion_time.is_not(None))
+        .first()
+    )
 
 
-def get_student_submission(student_id, quiz_id):
-    db = SessionLocal()
-    try:
-        return (
-            db.query(Submission)
-            .filter(Submission.student_id == student_id, Submission.quiz_id == quiz_id)
-            .order_by(Submission.submission_id.desc())
-            .first()
-        )
-    finally:
-        db.close()
+def get_existing_submission(db, quiz_id, student_id):
+    return (
+        db.query(Submission)
+        .filter(Submission.quiz_id == quiz_id, Submission.student_id == student_id)
+        .first()
+    )
 
 
-def update_submission_score(submission_id, score):
-    db = SessionLocal()
-    try:
-        submission = db.query(Submission).filter(Submission.submission_id == submission_id).first()
-        if not submission:
-            return None
-
-        submission.score = score
-        db.commit()
-        db.refresh(submission)
-        return submission
-    except Exception:
-        db.rollback()
-        raise
-    finally:
-        db.close()
+def create_submission_record(db, quiz_id, student_id, submitted_at=None):
+    submission = Submission(
+        quiz_id=quiz_id,
+        student_id=student_id,
+        submitted_at=submitted_at or datetime.now(),
+    )
+    db.add(submission)
+    db.commit()
+    db.refresh(submission)
+    return get_latest_submission(db, quiz_id, student_id)
 
 
-def get_submissions_by_quiz(quiz_id):
-    db = SessionLocal()
-    try:
-        return (
-            db.query(Submission)
-            .filter(Submission.quiz_id == quiz_id)
-            .order_by(Submission.score.desc(), Submission.completion_time.asc())
-            .all()
-        )
-    finally:
-        db.close()
+def save_submission_answer(db, submission, question_id, selected_option):
+    existing_answer = next((answer for answer in submission.answers if answer.question_id == question_id), None)
+    if existing_answer:
+        existing_answer.selected_option = selected_option
+        return existing_answer
+
+    answer = Answer(submission_id=submission.submission_id, question_id=question_id, selected_option=selected_option)
+    db.add(answer)
+    return answer
 
 
-def delete_submission(submission_id):
-    db = SessionLocal()
-    try:
-        submission = db.query(Submission).filter(Submission.submission_id == submission_id).first()
-        if not submission:
-            return False
-
-        db.delete(submission)
-        db.commit()
-        return True
-    except Exception:
-        db.rollback()
-        raise
-    finally:
-        db.close()
+def get_results_for_student(db, student_id):
+    return (
+        db.query(Submission)
+        .options(joinedload(Submission.quiz).joinedload(Quiz.questions), joinedload(Submission.answers))
+        .filter(Submission.student_id == student_id, Submission.completion_time.is_not(None))
+        .order_by(Submission.submitted_at.desc(), Submission.submission_id.desc())
+        .all()
+    )

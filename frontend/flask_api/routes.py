@@ -5,7 +5,6 @@ import sys
 from datetime import datetime, timedelta
 
 from flask import Blueprint, Response, jsonify, request
-from sqlalchemy.orm import joinedload
 
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 BACKEND_DIR = os.path.abspath(os.path.join(CURRENT_DIR, "..", "..", "backend", "quiz_platform"))
@@ -16,11 +15,23 @@ if BACKEND_DIR not in sys.path:
 from auth.admin_auth import login_admin, register_admin
 from auth.auth_service import validate_token
 from auth.student_auth import login_student, register_student
-from database.quiz_repository import add_question, create_quiz as create_quiz_record, delete_quiz
+from quiz_management.question_manager import add_question as add_managed_question
+from quiz_management.quiz_creator import create_private_quiz, create_public_quiz
+from repositories.question_repository import QuestionRepository
+from repositories.quiz_repository import QuizRepository
+from repositories.submission_repository import SubmissionRepository
+
+
+quiz_repository = QuizRepository()
+submission_repository = SubmissionRepository()
+question_repository = QuestionRepository()
 from database.session import SessionLocal
-from models.quiz import Quiz
-from models.submission import Submission
 from quiz_runtime.evaluation import evaluate_answer
+
+try:
+    from .tcp_bridge import send_tcp_request
+except ImportError:
+    from tcp_bridge import send_tcp_request
 
 api = Blueprint("api", __name__)
 
@@ -242,50 +253,16 @@ def _serialize_submission(submission):
     return payload
 
 
-def _get_latest_submission(db, quiz_id, student_id):
-    return (
-        db.query(Submission)
-        .options(joinedload(Submission.answers), joinedload(Submission.quiz).joinedload(Quiz.questions))
-        .filter(Submission.quiz_id == quiz_id, Submission.student_id == student_id)
-        .order_by(Submission.submission_id.desc())
-        .first()
-    )
-
-
 def _get_or_create_active_submission(db, quiz_id, student_id):
-    active_submission = (
-        db.query(Submission)
-        .options(joinedload(Submission.answers), joinedload(Submission.quiz).joinedload(Quiz.questions))
-        .filter(Submission.quiz_id == quiz_id, Submission.student_id == student_id, Submission.completion_time.is_(None))
-        .order_by(Submission.submission_id.desc())
-        .first()
-    )
+    active_submission = submission_repository.get_active_submission(db, quiz_id, student_id)
     if active_submission:
         return active_submission
 
-    latest_submission = _get_latest_submission(db, quiz_id, student_id)
+    latest_submission = submission_repository.get_latest_submission(db, quiz_id, student_id)
     if latest_submission and latest_submission.completion_time is not None and latest_submission.quiz.is_private:
         return latest_submission
 
-    submission = Submission(quiz_id=quiz_id, student_id=student_id, submitted_at=_current_time())
-    db.add(submission)
-    db.commit()
-    db.refresh(submission)
-    return _get_latest_submission(db, quiz_id, student_id)
-
-
-def _get_quiz_with_relations(db, quiz_id):
-    return (
-        db.query(Quiz)
-        .options(
-            joinedload(Quiz.creator),
-            joinedload(Quiz.questions),
-            joinedload(Quiz.submissions).joinedload(Submission.student),
-            joinedload(Quiz.submissions).joinedload(Submission.answers),
-        )
-        .filter(Quiz.quiz_id == quiz_id)
-        .first()
-    )
+    return submission_repository.create_submission(quiz_id, student_id, submitted_at=_current_time())
 
 
 def _build_leaderboard(quiz, viewer_user_id=None, include_live_attempts=False):
@@ -329,6 +306,68 @@ def _build_leaderboard(quiz, viewer_user_id=None, include_live_attempts=False):
         "liveParticipantCount": len([submission for submission in quiz.submissions if submission.completion_time is None]),
         "includesLiveAttempts": include_live_attempts,
     }
+
+
+def _sync_tcp_join(user, quiz, submission=None):
+    tcp_payload = {
+        "student_id": user.get("user_id"),
+        "quiz_id": quiz.quiz_id,
+        "student_name": user.get("name") or f"User {user.get('user_id')}",
+        "total_questions": len(getattr(quiz, "questions", []) or []),
+    }
+    if user.get("role") == "admin":
+        tcp_payload["student_id"] = f"admin-{user.get('user_id')}"
+    try:
+        return send_tcp_request("join_quiz", tcp_payload)
+    except OSError:
+        return {"ok": False, "error": "tcp-unavailable"}
+
+
+def _sync_tcp_answer(user, quiz, submission, question_id, selected_option):
+    try:
+        return send_tcp_request(
+            "answer",
+            {
+                "student_id": user.get("user_id"),
+                "student_name": user.get("name") or f"Student {user.get('user_id')}",
+                "quiz_id": quiz.quiz_id,
+                "question_id": question_id,
+                "selected_option": selected_option,
+                "score": int(round(float(submission.score or 0.0))),
+                "attempted_count": len(submission.answers),
+                "total_questions": len(quiz.questions),
+            },
+        )
+    except OSError:
+        return {"ok": False, "error": "tcp-unavailable"}
+
+
+def _sync_tcp_submit(user, quiz, submission):
+    try:
+        return send_tcp_request(
+            "submit",
+            {
+                "student_id": user.get("user_id"),
+                "student_name": user.get("name") or f"Student {user.get('user_id')}",
+                "quiz_id": quiz.quiz_id,
+                "score": int(round(float(submission.score or 0.0))),
+                "completion_time": float(submission.completion_time or 0.0),
+                "attempted_count": len(submission.answers),
+                "total_questions": len(quiz.questions),
+            },
+        )
+    except OSError:
+        return {"ok": False, "error": "tcp-unavailable"}
+
+
+def _tcp_leaderboard_rows(quiz_id):
+    try:
+        response = send_tcp_request("leaderboard", {"quiz_id": quiz_id})
+    except OSError:
+        return []
+
+    rows = response.get("leaderboard") if isinstance(response, dict) else []
+    return rows if isinstance(rows, list) else []
 
 
 def _csv_response_for_quiz(quiz):
@@ -408,13 +447,7 @@ def auth_validate():
 def public_quizzes():
     db = SessionLocal()
     try:
-        quizzes = (
-            db.query(Quiz)
-            .options(joinedload(Quiz.creator), joinedload(Quiz.questions), joinedload(Quiz.submissions))
-            .filter(Quiz.is_private.is_(False))
-            .order_by(Quiz.start_time.asc(), Quiz.quiz_id.asc())
-            .all()
-        )
+        quizzes = quiz_repository.get_public_quizzes_with_relations(db)
         return jsonify({"ok": True, "quizzes": [_serialize_quiz(quiz, include_questions=False) for quiz in quizzes]})
     finally:
         db.close()
@@ -428,13 +461,7 @@ def admin_quizzes():
 
     db = SessionLocal()
     try:
-        quizzes = (
-            db.query(Quiz)
-            .options(joinedload(Quiz.creator), joinedload(Quiz.questions), joinedload(Quiz.submissions))
-            .filter(Quiz.created_by == user["user_id"])
-            .order_by(Quiz.start_time.desc(), Quiz.quiz_id.desc())
-            .all()
-        )
+        quizzes = quiz_repository.get_admin_quizzes_with_relations(db, user["user_id"])
         stats = {
             "totalQuizzes": len(quizzes),
             "activeQuizzes": len([quiz for quiz in quizzes if _quiz_status(quiz) == "active"]),
@@ -454,7 +481,7 @@ def update_quiz(quiz_id):
     payload = request.get_json(silent=True) or {}
     db = SessionLocal()
     try:
-        quiz = _get_quiz_with_relations(db, quiz_id)
+        quiz = quiz_repository.get_quiz_with_relations(db, quiz_id)
         if not quiz:
             return jsonify({"ok": False, "error": "quiz-not-found", "message": _message_for("quiz-not-found")}), 404
         if quiz.created_by != user["user_id"]:
@@ -473,21 +500,20 @@ def update_quiz(quiz_id):
             db.delete(question)
         db.flush()
 
-        for question in incoming_questions:
-            from models.question import Question
-            options = question.get("options") or {}
-            db.add(Question(
-                quiz_id=quiz.quiz_id,
-                question_text=(question.get("text") or "").strip() or "Untitled Question",
-                option_a=options.get("A") or "Option A",
-                option_b=options.get("B") or "Option B",
-                option_c=options.get("C") or "Option C",
-                option_d=options.get("D") or "Option D",
-                correct_answer=(question.get("correctAnswer") or question.get("correctKey") or "A").strip().upper(),
-            ))
-
         db.commit()
-        updated_quiz = _get_quiz_with_relations(db, quiz_id)
+
+        for question in incoming_questions:
+            options = question.get("options") or {}
+            question_repository.add_question(
+                quiz.quiz_id,
+                (question.get("text") or "").strip() or "Untitled Question",
+                options.get("A") or "Option A",
+                options.get("B") or "Option B",
+                options.get("C") or "Option C",
+                options.get("D") or "Option D",
+                (question.get("correctAnswer") or question.get("correctKey") or "A").strip().upper(),
+            )
+        updated_quiz = quiz_repository.get_quiz_with_relations(db, quiz_id)
         return jsonify({"ok": True, "quiz": _serialize_quiz(updated_quiz, include_questions=True, include_correct=True)})
     finally:
         db.close()
@@ -501,7 +527,7 @@ def remove_quiz(quiz_id):
 
     db = SessionLocal()
     try:
-        quiz = _get_quiz_with_relations(db, quiz_id)
+        quiz = quiz_repository.get_quiz_with_relations(db, quiz_id)
         if not quiz:
             return jsonify({"ok": False, "error": "quiz-not-found", "message": _message_for("quiz-not-found")}), 404
         if quiz.created_by != user["user_id"]:
@@ -511,7 +537,7 @@ def remove_quiz(quiz_id):
     finally:
         db.close()
 
-    delete_quiz(quiz_id)
+    quiz_repository.delete_quiz(quiz_id)
     return jsonify({"ok": True, "deleted": True, "quizId": quiz_id})
 
 
@@ -524,26 +550,38 @@ def create_quiz():
     payload = request.get_json(silent=True) or {}
     questions = payload.get("questions") or []
 
-    quiz = create_quiz_record({
-        "title": (payload.get("title") or "Untitled Quiz").strip(),
-        "category": (payload.get("category") or "General Knowledge").strip(),
-        "created_by": user["user_id"],
-        "is_private": (payload.get("quizType") or "private") == "private",
-        "password": (payload.get("password") or "").strip() or None,
-        "duration": max(60, int(payload.get("durationMinutes") or 30) * 60),
-        "start_time": _parse_start_time(payload.get("startAt")),
-    })
+    quiz_type = (payload.get("quizType") or "private")
+    duration_seconds = max(60, int(payload.get("durationMinutes") or 30) * 60)
+    start_time = _parse_start_time(payload.get("startAt"))
+    if quiz_type == "public":
+        quiz = create_public_quiz(
+            title=(payload.get("title") or "Untitled Quiz").strip(),
+            duration=duration_seconds,
+            category=(payload.get("category") or "General Knowledge").strip(),
+            created_by=user["user_id"],
+            start_time=start_time,
+        )
+    else:
+        quiz = create_private_quiz(
+            title=(payload.get("title") or "Untitled Quiz").strip(),
+            duration=duration_seconds,
+            category=(payload.get("category") or "General Knowledge").strip(),
+            password=(payload.get("password") or "").strip() or None,
+            created_by=user["user_id"],
+            start_time=start_time,
+        )
 
     for question in questions:
-        add_question(quiz.quiz_id, {
-            "question_text": (question.get("text") or "").strip() or "Untitled Question",
-            "options": question.get("options") or {},
-            "correct_answer": (question.get("correctAnswer") or question.get("correctKey") or "A").strip().upper(),
-        })
+        add_managed_question(
+            quiz.quiz_id,
+            (question.get("text") or "").strip() or "Untitled Question",
+            question.get("options") or {},
+            (question.get("correctAnswer") or question.get("correctKey") or "A").strip().upper(),
+        )
 
     db = SessionLocal()
     try:
-        created_quiz = _get_quiz_with_relations(db, quiz.quiz_id)
+        created_quiz = quiz_repository.get_quiz_with_relations(db, quiz.quiz_id)
         return jsonify({"ok": True, "quiz": _serialize_quiz(created_quiz, include_questions=True, include_correct=True)})
     finally:
         db.close()
@@ -561,7 +599,7 @@ def join_quiz():
 
     db = SessionLocal()
     try:
-        quiz = _get_quiz_with_relations(db, quiz_id)
+        quiz = quiz_repository.get_quiz_with_relations(db, quiz_id)
         if not quiz:
             return jsonify({"ok": False, "error": "quiz-not-found", "message": _message_for("quiz-not-found")}), 404
         if quiz.is_private and quiz.password != password:
@@ -573,13 +611,15 @@ def join_quiz():
             "quiz": serialized_quiz,
             "requiresWaitingRoom": user["role"] == "student" and quiz.is_private and not _quiz_has_started(quiz),
         }
+        _sync_tcp_join(user, quiz)
+
         if user["role"] == "student":
             submission = _get_or_create_active_submission(db, quiz.quiz_id, user["user_id"])
             if not quiz.is_private:
                 if submission.completion_time is None and _submission_has_ended(submission, quiz):
                     _finalize_submission(submission, quiz.questions)
                     db.commit()
-                    submission = _get_latest_submission(db, quiz.quiz_id, user["user_id"])
+                    submission = submission_repository.get_latest_submission(db, quiz.quiz_id, user["user_id"])
                 if submission.completion_time is not None:
                     submission = _get_or_create_active_submission(db, quiz.quiz_id, user["user_id"])
                 response["quiz"] = _serialize_quiz(quiz, include_questions=True, include_correct=user["role"] == "admin", submission=submission)
@@ -602,15 +642,11 @@ def quiz_details(quiz_id):
 
     db = SessionLocal()
     try:
-        quiz = _get_quiz_with_relations(db, quiz_id)
+        quiz = quiz_repository.get_quiz_with_relations(db, quiz_id)
         if not quiz:
             return jsonify({"ok": False, "error": "quiz-not-found", "message": _message_for("quiz-not-found")}), 404
         if quiz.is_private and user["role"] != "admin":
-            existing_submission = (
-                db.query(Submission)
-                .filter(Submission.quiz_id == quiz_id, Submission.student_id == user["user_id"])
-                .first()
-            )
+            existing_submission = submission_repository.get_existing_submission(db, quiz_id, user["user_id"])
             if not existing_submission:
                 return jsonify({"ok": False, "error": "forbidden", "message": _message_for("private-quiz-password-required")}), 403
 
@@ -621,7 +657,7 @@ def quiz_details(quiz_id):
         }
         if user["role"] == "student":
             if quiz.is_private:
-                submission = _get_latest_submission(db, quiz_id, user["user_id"])
+                submission = submission_repository.get_latest_submission(db, quiz_id, user["user_id"])
                 response["submission"] = _serialize_submission(submission) if submission else None
                 response["canAttempt"] = bool(submission is None or submission.completion_time is None)
                 return jsonify(response)
@@ -630,7 +666,7 @@ def quiz_details(quiz_id):
             if submission.completion_time is None and _submission_has_ended(submission, quiz):
                 _finalize_submission(submission, quiz.questions)
                 db.commit()
-                submission = _get_latest_submission(db, quiz_id, user["user_id"])
+                submission = submission_repository.get_latest_submission(db, quiz_id, user["user_id"])
             if submission.completion_time is not None:
                 submission = _get_or_create_active_submission(db, quiz_id, user["user_id"])
             response["quiz"] = _serialize_quiz(quiz, include_questions=True, include_correct=user["role"] == "admin", submission=submission)
@@ -653,7 +689,7 @@ def save_quiz_answer(quiz_id):
 
     db = SessionLocal()
     try:
-        quiz = _get_quiz_with_relations(db, quiz_id)
+        quiz = quiz_repository.get_quiz_with_relations(db, quiz_id)
         if not quiz:
             return jsonify({"ok": False, "error": "quiz-not-found", "message": _message_for("quiz-not-found")}), 404
 
@@ -670,25 +706,23 @@ def save_quiz_answer(quiz_id):
             return jsonify({"ok": False, "error": "quiz-ended", "message": _message_for("quiz-ended")}), 409
         if submission.completion_time is not None:
             return jsonify({"ok": False, "error": "quiz-already-submitted", "message": _message_for("quiz-already-submitted")}), 409
-        existing_answer = next((answer for answer in submission.answers if answer.question_id == question_id), None)
-        if existing_answer:
-            existing_answer.selected_option = selected_option
-        else:
-            from models.answer import Answer
-            db.add(Answer(submission_id=submission.submission_id, question_id=question_id, selected_option=selected_option))
+        submission_repository.save_answer(db, submission, question_id, selected_option)
 
         db.commit()
         db.refresh(submission)
-        submission = _get_latest_submission(db, quiz_id, user["user_id"])
+        submission = submission_repository.get_latest_submission(db, quiz_id, user["user_id"])
         submission.score = _compute_submission_score(submission, quiz.questions)
         db.commit()
         db.refresh(submission)
+
+        tcp_response = _sync_tcp_answer(user, quiz, submission, question_id, selected_option)
 
         return jsonify({
             "ok": True,
             "submission": _serialize_submission(submission),
             "liveScore": int(round(float(submission.score or 0.0))),
             "answeredCount": len(submission.answers),
+            "tcpSynced": bool(tcp_response.get("ok")),
         })
     finally:
         db.close()
@@ -702,21 +736,15 @@ def submit_quiz(quiz_id):
 
     db = SessionLocal()
     try:
-        quiz = _get_quiz_with_relations(db, quiz_id)
+        quiz = quiz_repository.get_quiz_with_relations(db, quiz_id)
         if not quiz:
             return jsonify({"ok": False, "error": "quiz-not-found", "message": _message_for("quiz-not-found")}), 404
         if quiz.is_private and not _quiz_has_started(quiz):
             return jsonify({"ok": False, "error": "quiz-not-started", "message": _message_for("quiz-not-started")}), 409
 
-        submission = (
-            db.query(Submission)
-            .options(joinedload(Submission.answers), joinedload(Submission.quiz).joinedload(Quiz.questions))
-            .filter(Submission.quiz_id == quiz_id, Submission.student_id == user["user_id"], Submission.completion_time.is_(None))
-            .order_by(Submission.submission_id.desc())
-            .first()
-        )
+        submission = submission_repository.get_active_submission(db, quiz_id, user["user_id"])
         if not submission:
-            latest_submission = _get_latest_submission(db, quiz_id, user["user_id"])
+            latest_submission = submission_repository.get_latest_submission(db, quiz_id, user["user_id"])
             if latest_submission and latest_submission.completion_time is not None:
                 return jsonify({"ok": False, "error": "quiz-already-submitted", "message": _message_for("quiz-already-submitted")}), 409
             return jsonify({"ok": False, "error": "submission-not-found", "message": _message_for("submission-not-found")}), 404
@@ -729,8 +757,9 @@ def submit_quiz(quiz_id):
             submission.submitted_at = _current_time()
         db.commit()
         db.refresh(submission)
-        submission = _get_latest_submission(db, quiz_id, user["user_id"])
-        return jsonify({"ok": True, "result": _serialize_submission(submission)})
+        submission = submission_repository.get_latest_submission(db, quiz_id, user["user_id"])
+        tcp_response = _sync_tcp_submit(user, quiz, submission)
+        return jsonify({"ok": True, "result": _serialize_submission(submission), "tcpSynced": bool(tcp_response.get("ok"))})
     finally:
         db.close()
 
@@ -743,23 +772,44 @@ def quiz_leaderboard(quiz_id):
 
     db = SessionLocal()
     try:
-        quiz = _get_quiz_with_relations(db, quiz_id)
+        quiz = quiz_repository.get_quiz_with_relations(db, quiz_id)
         if not quiz:
             return jsonify({"ok": False, "error": "quiz-not-found", "message": _message_for("quiz-not-found")}), 404
         if not quiz.is_private:
             return jsonify({"ok": False, "error": "forbidden", "message": _message_for("leaderboard-not-available")}), 403
 
         if user["role"] == "student":
-            completed_submission = (
-                db.query(Submission)
-                .filter(Submission.quiz_id == quiz_id, Submission.student_id == user["user_id"], Submission.completion_time.is_not(None))
-                .first()
-            )
+            completed_submission = submission_repository.get_completed_submission(db, quiz_id, user["user_id"])
             if not completed_submission:
                 return jsonify({"ok": False, "error": "forbidden", "message": "Students can open the leaderboard only after submitting the full quiz."}), 403
 
         include_live_attempts = user["role"] == "admin"
-        return jsonify({"ok": True, **_build_leaderboard(quiz, viewer_user_id=user["user_id"], include_live_attempts=include_live_attempts)})
+        payload = _build_leaderboard(quiz, viewer_user_id=user["user_id"], include_live_attempts=include_live_attempts)
+        tcp_rows = _tcp_leaderboard_rows(quiz_id)
+        if include_live_attempts and tcp_rows:
+            merged_rows = []
+            database_rows = {str(row["userId"]): row for row in payload.get("leaderboard", [])}
+            for row in tcp_rows:
+                row_user_id = str(row.get("student_id"))
+                if row_user_id.startswith("admin-"):
+                    continue
+                merged_rows.append({
+                    "rank": row.get("rank", 0),
+                    "userId": row.get("student_id"),
+                    "name": row.get("name") or database_rows.get(row_user_id, {}).get("name", f"Student {row_user_id}"),
+                    "score": int(round(float(row.get("score", 0) or 0))),
+                    "totalQuestions": int(row.get("total_questions", database_rows.get(row_user_id, {}).get("totalQuestions", len(quiz.questions))) or len(quiz.questions)),
+                    "attemptedCount": int(row.get("attempted_count", database_rows.get(row_user_id, {}).get("attemptedCount", 0)) or 0),
+                    "completion": row.get("completion") or database_rows.get(row_user_id, {}).get("completion", "Live"),
+                    "status": "Current User" if str(row.get("student_id")) == str(user["user_id"]) else (row.get("status") or "Live"),
+                })
+            if merged_rows:
+                payload["leaderboard"] = merged_rows
+                payload["participantCount"] = len(merged_rows)
+                payload["liveParticipantCount"] = len([row for row in merged_rows if row.get("status") != "Submitted"])
+                payload["viewerRank"] = next((row["rank"] for row in merged_rows if str(row["userId"]) == str(user["user_id"])), payload.get("viewerRank"))
+                payload["tcpEnabled"] = True
+        return jsonify({"ok": True, **payload})
     finally:
         db.close()
 
@@ -772,7 +822,7 @@ def export_quiz_results(quiz_id):
 
     db = SessionLocal()
     try:
-        quiz = _get_quiz_with_relations(db, quiz_id)
+        quiz = quiz_repository.get_quiz_with_relations(db, quiz_id)
         if not quiz:
             return jsonify({"ok": False, "error": "quiz-not-found", "message": _message_for("quiz-not-found")}), 404
         if quiz.created_by != user["user_id"]:
@@ -784,7 +834,7 @@ def export_quiz_results(quiz_id):
         db.close()
 
     if is_private:
-        delete_quiz(quiz_id)
+        quiz_repository.delete_quiz(quiz_id)
     return response
 
 
@@ -796,13 +846,7 @@ def my_results():
 
     db = SessionLocal()
     try:
-        submissions = (
-            db.query(Submission)
-            .options(joinedload(Submission.quiz).joinedload(Quiz.questions), joinedload(Submission.answers))
-            .filter(Submission.student_id == user["user_id"], Submission.completion_time.is_not(None))
-            .order_by(Submission.submitted_at.desc(), Submission.submission_id.desc())
-            .all()
-        )
+        submissions = submission_repository.get_results_for_student(db, user["user_id"])
         return jsonify({"ok": True, "results": [_serialize_submission(submission) for submission in submissions]})
     finally:
         db.close()

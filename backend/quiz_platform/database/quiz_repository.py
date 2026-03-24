@@ -1,8 +1,11 @@
 from datetime import datetime
 
+from sqlalchemy.orm import joinedload
+
 from database.session import SessionLocal
 from models.question import Question
 from models.quiz import Quiz
+from models.submission import Submission
 
 
 def _normalize_start_time(start_time):
@@ -149,6 +152,40 @@ def get_questions_by_quiz(quiz_id):
         )
     finally:
         db.close()
+
+
+def get_quiz_with_relations(db, quiz_id):
+    return (
+        db.query(Quiz)
+        .options(
+            joinedload(Quiz.creator),
+            joinedload(Quiz.questions),
+            joinedload(Quiz.submissions).joinedload(Submission.student),
+            joinedload(Quiz.submissions).joinedload(Submission.answers),
+        )
+        .filter(Quiz.quiz_id == quiz_id)
+        .first()
+    )
+
+
+def get_public_quizzes_with_relations(db):
+    return (
+        db.query(Quiz)
+        .options(joinedload(Quiz.creator), joinedload(Quiz.questions), joinedload(Quiz.submissions))
+        .filter(Quiz.is_private.is_(False))
+        .order_by(Quiz.start_time.asc(), Quiz.quiz_id.asc())
+        .all()
+    )
+
+
+def get_admin_quizzes_with_relations(db, admin_user_id):
+    return (
+        db.query(Quiz)
+        .options(joinedload(Quiz.creator), joinedload(Quiz.questions), joinedload(Quiz.submissions))
+        .filter(Quiz.created_by == admin_user_id)
+        .order_by(Quiz.start_time.desc(), Quiz.quiz_id.desc())
+        .all()
+    )
 
 
 def delete_question(question_id):

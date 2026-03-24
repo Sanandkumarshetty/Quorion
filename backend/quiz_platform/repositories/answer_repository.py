@@ -1,17 +1,21 @@
 from models.answer import Answer
-from database.session import SessionLocal
+
 
 class AnswerRepository:
+    def save_answer(self, db, submission_id, question_id, selected_option):
+        answer = (
+            db.query(Answer)
+            .filter(Answer.submission_id == submission_id, Answer.question_id == question_id)
+            .first()
+        )
+        if answer:
+            answer.selected_option = selected_option
+            return answer
 
-    def add_answer(self, submission_id, question_id, selected_option):
-        db = SessionLocal()
         answer = Answer(
             submission_id=submission_id,
             question_id=question_id,
-            selected_option=selected_option
+            selected_option=selected_option,
         )
         db.add(answer)
-        db.commit()
-        db.refresh(answer)
-        db.close()
         return answer

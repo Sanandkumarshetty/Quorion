@@ -1,7 +1,8 @@
 import json
 import threading
-import time
 
+from quiz_runtime.leaderboard import get_leaderboard
+from quiz_runtime.quiz_session import add_student_to_session, create_session, end_session, record_answer
 from server.connection_manager import (
     add_admin_connection,
     add_student_connection,
@@ -9,6 +10,8 @@ from server.connection_manager import (
     broadcast_to_students,
     remove_connection,
 )
+from utils.helpers import create_response_message, parse_message
+from utils.timer import get_remaining_time, start_timer
 
 
 _sessions_lock = threading.RLock()
@@ -16,24 +19,11 @@ _sessions = {}
 
 
 def _parse_message(raw_data):
-    if isinstance(raw_data, bytes):
-        raw_data = raw_data.decode("utf-8", errors="ignore")
-    raw_data = raw_data.strip()
-    if not raw_data:
-        return {}
-
-    try:
-        message = json.loads(raw_data)
-    except json.JSONDecodeError:
-        return {"action": "invalid", "payload": {"reason": "invalid-json"}}
-
-    if not isinstance(message, dict):
-        return {"action": "invalid", "payload": {"reason": "object-required"}}
-    return message
+    return parse_message(raw_data)
 
 
 def _build_response(message_type, payload):
-    return json.dumps({"type": message_type, "payload": payload}) + "\n"
+    return create_response_message(message_type, payload)
 
 
 def _send_message(client_socket, message):
@@ -55,17 +45,51 @@ def _send(client_socket, message_type, payload):
 def _get_or_create_session(quiz_id):
     with _sessions_lock:
         if quiz_id not in _sessions:
-            _sessions[quiz_id] = {
-                "quiz_id": quiz_id,
-                "students": set(),
-                "answers": {},
-                "scores": {},
-                "completion_time": {},
-                "started_at": time.time(),
-                "ended": False,
-                "lock": threading.RLock(),
-            }
+            session = create_session(quiz_id)
+            session.update(
+                {
+                    "student_names": {},
+                    "attempted_count": {},
+                    "total_questions": {},
+                    "submitted": set(),
+                    "started_at": start_timer(session.get("quiz", {}).get("duration", 0) or 0),
+                }
+            )
+            _sessions[quiz_id] = session
         return _sessions[quiz_id]
+
+
+def _decorate_leaderboard_rows(session, rows):
+    decorated_rows = []
+    total_questions_map = session.get("total_questions", {})
+    attempted_count_map = session.get("attempted_count", {})
+    student_names = session.get("student_names", {})
+    submitted = session.get("submitted", set())
+
+    for row in rows:
+        student_id = row.get("student_id")
+        total_questions = int(total_questions_map.get(student_id, 0) or 0)
+        attempted_count = int(attempted_count_map.get(student_id, 0) or 0)
+        is_submitted = student_id in submitted
+        decorated = dict(row)
+        decorated["name"] = student_names.get(student_id, f"Student {student_id}")
+        decorated["total_questions"] = total_questions
+        decorated["attempted_count"] = attempted_count
+        decorated["completion"] = "Completed" if is_submitted else f"{attempted_count}/{total_questions} answered"
+        decorated["status"] = "Submitted" if is_submitted else "Live"
+        decorated_rows.append(decorated)
+
+    decorated_rows.sort(
+        key=lambda row: (
+            -float(row.get("score", 0)),
+            -int(row.get("attempted_count", 0)),
+            float(row.get("completion_time", float("inf"))),
+            str(row.get("name", "")).lower(),
+        )
+    )
+    for index, row in enumerate(decorated_rows, start=1):
+        row["rank"] = index
+    return decorated_rows
 
 
 def _calculate_leaderboard(quiz_id):
@@ -74,21 +98,8 @@ def _calculate_leaderboard(quiz_id):
     if not session:
         return []
 
-    with session["lock"]:
-        rows = []
-        for student_id, score in session["scores"].items():
-            rows.append(
-                {
-                    "student_id": student_id,
-                    "score": score,
-                    "completion_time": session["completion_time"].get(student_id, float("inf")),
-                }
-            )
-
-    rows.sort(key=lambda row: (-float(row.get("score", 0)), float(row.get("completion_time", float("inf")))))
-    for index, row in enumerate(rows, start=1):
-        row["rank"] = index
-    return rows
+    rows = get_leaderboard(session)
+    return _decorate_leaderboard_rows(session, rows)
 
 
 def handle_client(client_socket):
@@ -154,15 +165,20 @@ def process_join_quiz(message):
     payload = message.get("payload", {})
     student_id = payload.get("student_id")
     quiz_id = payload.get("quiz_id")
+    student_name = payload.get("student_name")
+    total_questions = payload.get("total_questions")
 
     if student_id is None or quiz_id is None:
         return {"ok": False, "error": "student_id-and-quiz_id-required"}
 
     session = _get_or_create_session(quiz_id)
+    add_student_to_session(session, student_id)
     with session["lock"]:
-        session["students"].add(student_id)
-        session["answers"].setdefault(student_id, {})
-        session["scores"].setdefault(student_id, 0)
+        session["attempted_count"].setdefault(student_id, 0)
+        if student_name:
+            session["student_names"][student_id] = student_name
+        if total_questions is not None:
+            session["total_questions"][student_id] = int(total_questions)
 
     broadcast_to_admins(
         _build_response(
@@ -183,22 +199,44 @@ def process_answer(message):
     quiz_id = payload.get("quiz_id")
     question_id = payload.get("question_id")
     selected_option = payload.get("selected_option")
+    score = payload.get("score")
+    attempted_count = payload.get("attempted_count")
+    total_questions = payload.get("total_questions")
+    student_name = payload.get("student_name")
 
     if None in (student_id, quiz_id, question_id) or not selected_option:
         return {"ok": False, "error": "missing-answer-fields"}
 
     session = _get_or_create_session(quiz_id)
+    record_answer(session, student_id, question_id, selected_option)
     with session["lock"]:
-        session["answers"].setdefault(student_id, {})
-        session["answers"][student_id][question_id] = selected_option
+        if score is not None:
+            session["scores"][student_id] = float(score)
+        if attempted_count is not None:
+            session["attempted_count"][student_id] = int(attempted_count)
+        if total_questions is not None:
+            session["total_questions"][student_id] = int(total_questions)
+        if student_name:
+            session["student_names"][student_id] = student_name
 
-    return {"ok": True, "saved": True}
+    leaderboard = _calculate_leaderboard(quiz_id)
+    broadcast_to_admins(
+        _build_response(
+            "event",
+            {"event": "leaderboard_update", "quiz_id": quiz_id, "rows": leaderboard},
+        )
+    )
+
+    return {"ok": True, "saved": True, "leaderboard": leaderboard}
 
 
 def process_submit(message):
     payload = message.get("payload", {})
     student_id = payload.get("student_id")
     quiz_id = payload.get("quiz_id")
+    student_name = payload.get("student_name")
+    total_questions = payload.get("total_questions")
+    attempted_count = payload.get("attempted_count")
 
     if student_id is None or quiz_id is None:
         return {"ok": False, "error": "student_id-and-quiz_id-required"}
@@ -209,9 +247,18 @@ def process_submit(message):
     session = _get_or_create_session(quiz_id)
     with session["lock"]:
         session["scores"][student_id] = score
+        if student_name:
+            session["student_names"][student_id] = student_name
+        if total_questions is not None:
+            session["total_questions"][student_id] = int(total_questions)
+        if attempted_count is not None:
+            session["attempted_count"][student_id] = int(attempted_count)
         if completion_time is None:
-            completion_time = max(time.time() - session["started_at"], 0)
+            duration = session.get("quiz", {}).get("duration", 0) or 0
+            completion_time = max(float(duration) - get_remaining_time(session.get("started_at"), duration), 0.0)
         session["completion_time"][student_id] = float(completion_time)
+        session["submitted"].add(student_id)
+    end_session(session)
 
     leaderboard = _calculate_leaderboard(quiz_id)
     leaderboard_message = _build_response(

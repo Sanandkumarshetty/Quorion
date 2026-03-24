@@ -11,6 +11,8 @@ if BACKEND_DIR not in sys.path:
     sys.path.insert(0, BACKEND_DIR)
 
 from database.db_manager import create_database
+from quiz_management.quiz_scheduler import get_upcoming_quizzes
+from server.tcp_server import start_server as start_tcp_server
 
 try:
     from .routes import api
@@ -22,6 +24,8 @@ def create_app():
     app = Flask(__name__)
     CORS(app)
     create_database()
+    get_upcoming_quizzes()
+    start_tcp_server("0.0.0.0", 12000)
     app.register_blueprint(api, url_prefix="/api")
     return app
 

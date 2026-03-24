@@ -1,37 +1,22 @@
-from database.quiz_repository import create_quiz, get_all_quizzes
+from database.quiz_repository import create_quiz
 
 
-def generate_quiz_id():
-    quizzes = get_all_quizzes()
-    if not quizzes:
-        return 1
-    return max(quiz.quiz_id for quiz in quizzes) + 1
-
-
-def create_public_quiz(title, duration, category, created_by):
-    validate_quiz_data(
+def create_public_quiz(title, duration, category, created_by, start_time=None):
+    normalized = validate_quiz_data(
         {
             "title": title,
             "duration": duration,
             "category": category,
             "created_by": created_by,
             "is_private": False,
+            "start_time": start_time,
         }
     )
-    return create_quiz(
-        {
-            "title": str(title).strip(),
-            "duration": int(duration),
-            "category": str(category or "").strip() or None,
-            "created_by": created_by,
-            "is_private": False,
-            "password": None,
-        }
-    )
+    return create_quiz(normalized)
 
 
-def create_private_quiz(title, duration, category, password, created_by):
-    validate_quiz_data(
+def create_private_quiz(title, duration, category, password, created_by, start_time=None):
+    normalized = validate_quiz_data(
         {
             "title": title,
             "duration": duration,
@@ -39,18 +24,10 @@ def create_private_quiz(title, duration, category, password, created_by):
             "password": password,
             "created_by": created_by,
             "is_private": True,
+            "start_time": start_time,
         }
     )
-    return create_quiz(
-        {
-            "title": str(title).strip(),
-            "duration": int(duration),
-            "category": str(category or "").strip() or None,
-            "created_by": created_by,
-            "is_private": True,
-            "password": str(password).strip(),
-        }
-    )
+    return create_quiz(normalized)
 
 
 def validate_quiz_data(quiz_data):
@@ -88,4 +65,5 @@ def validate_quiz_data(quiz_data):
         "created_by": created_by,
         "is_private": is_private,
         "password": password or None,
+        "start_time": payload.get("start_time"),
     }

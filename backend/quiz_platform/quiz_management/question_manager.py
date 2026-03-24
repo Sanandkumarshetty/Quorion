@@ -1,7 +1,5 @@
 from database.quiz_repository import (
     add_question as repository_add_question,
-    delete_question as repository_delete_question,
-    get_questions_by_quiz,
 )
 from database.session import SessionLocal
 from models.question import Question
@@ -77,11 +75,3 @@ def update_question(question_id, updated_data):
         raise
     finally:
         db.close()
-
-
-def delete_question(question_id):
-    return repository_delete_question(question_id)
-
-
-def get_questions_for_quiz(quiz_id):
-    return get_questions_by_quiz(quiz_id)

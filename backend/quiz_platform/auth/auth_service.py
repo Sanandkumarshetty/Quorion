@@ -6,7 +6,10 @@ import os
 import secrets
 import time
 
-from database.user_repository import check_user_exists, create_user, get_user_by_email, get_user_by_id
+from repositories.user_repository import UserRepository
+
+
+user_repository = UserRepository()
 
 
 _PBKDF2_ITERATIONS = 100_000
@@ -70,7 +73,7 @@ def verify_password(password, stored_hash):
 
 
 def login_user(email, password):
-    user = get_user_by_email(email)
+    user = user_repository.get_user_by_email(email)
     if not user or not verify_password(password, user.password_hash):
         return {"ok": False, "error": "invalid-credentials"}
 
@@ -92,11 +95,11 @@ def register_user(name, email, password, role):
         return {"ok": False, "error": "email-required"}
     if normalized_role not in {"admin", "student"}:
         return {"ok": False, "error": "invalid-role"}
-    if check_user_exists(normalized_email):
+    if user_repository.check_user_exists(normalized_email):
         return {"ok": False, "error": "email-already-registered"}
 
     try:
-        user = create_user(
+        user = user_repository.create_user(
             name=normalized_name,
             email=normalized_email,
             password_hash=hash_password(password),
@@ -139,7 +142,7 @@ def validate_token(token):
     if int(payload.get("exp", 0)) < int(time.time()):
         return {"ok": False, "error": "token-expired"}
 
-    user = get_user_by_id(payload.get("user_id"))
+    user = user_repository.get_user_by_id(payload.get("user_id"))
     if not user:
         return {"ok": False, "error": "user-not-found"}
 

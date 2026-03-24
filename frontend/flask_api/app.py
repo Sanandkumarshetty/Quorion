@@ -11,7 +11,11 @@ if BACKEND_DIR not in sys.path:
     sys.path.insert(0, BACKEND_DIR)
 
 from database.db_manager import create_database
-from routes import api
+
+try:
+    from .routes import api
+except ImportError:
+    from routes import api
 
 
 def create_app():
@@ -26,4 +30,4 @@ app = create_app()
 
 
 if __name__ == "__main__":
-    app.run(debug=True, port=5000)
+    app.run(host="0.0.0.0", port=5000, debug=True)

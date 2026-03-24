@@ -1,6 +1,6 @@
 import { Link, NavLink } from "react-router-dom";
 
-export default function TopNav({ brand = "QuizMaster", homeTo = "/", links = [], actions, profile, compact = false }) {
+export default function TopNav({ brand = "Quorion", homeTo = "/", links = [], actions, profile, compact = false }) {
   return (
     <header className={compact ? "top-nav compact" : "top-nav"}>
       <Link className="brand-lockup" to={homeTo}>
@@ -40,3 +40,4 @@ export default function TopNav({ brand = "QuizMaster", homeTo = "/", links = [],
     </header>
   );
 }
+

@@ -76,3 +76,27 @@ coverage/
 *.tmp
 *.bak
 *.cache
+
+
+# Python tooling caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.pyre/
+.hypothesis/
+htmlcov/
+
+# Packaging
+*.egg-info/
+.eggs/
+pip-wheel-metadata/
+
+# Node package manager logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Project-generated artifacts
+quiz_platform.db
+*.zip

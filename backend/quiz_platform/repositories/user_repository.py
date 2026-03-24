@@ -1,5 +1,5 @@
 from models.user import User
-from database.db_manager import SessionLocal
+from database.session import SessionLocal
 
 class UserRepository:
 

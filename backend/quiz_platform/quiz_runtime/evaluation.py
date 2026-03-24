@@ -1,6 +1,5 @@
 import time
 
-
 def evaluate_answer(question, selected_option):
     if not question:
         raise ValueError("question-required")

@@ -1,5 +1,5 @@
-import socket
 import threading
+from socket import SHUT_RDWR
 
 
 _lock = threading.RLock()
@@ -8,11 +8,22 @@ _admin_connections = {}
 _socket_to_identity = {}
 
 
+def _send_message(client_socket, message):
+    data = message.encode("utf-8")
+    total_sent = 0
+
+    while total_sent < len(data):
+        sent = client_socket.send(data[total_sent:])
+        if sent == 0:
+            raise OSError("socket connection broken")
+        total_sent += sent
+
+
 def _safe_send(client_socket, message):
     if not isinstance(message, str):
         message = str(message)
     try:
-        client_socket.sendall(message.encode("utf-8"))
+        _send_message(client_socket, message)
         return True
     except OSError:
         return False
@@ -41,7 +52,7 @@ def remove_connection(client_socket):
                 _admin_connections.pop(user_id, None)
 
     try:
-        client_socket.shutdown(socket.SHUT_RDWR)
+        client_socket.shutdown(SHUT_RDWR)
     except OSError:
         pass
     try:

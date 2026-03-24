@@ -36,9 +36,20 @@ def _build_response(message_type, payload):
     return json.dumps({"type": message_type, "payload": payload}) + "\n"
 
 
+def _send_message(client_socket, message):
+    data = message.encode("utf-8")
+    total_sent = 0
+
+    while total_sent < len(data):
+        sent = client_socket.send(data[total_sent:])
+        if sent == 0:
+            raise OSError("socket connection broken")
+        total_sent += sent
+
+
 def _send(client_socket, message_type, payload):
     response = _build_response(message_type, payload)
-    client_socket.sendall(response.encode("utf-8"))
+    _send_message(client_socket, response)
 
 
 def _get_or_create_session(quiz_id):

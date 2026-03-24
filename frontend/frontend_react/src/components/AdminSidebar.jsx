@@ -29,7 +29,7 @@ export default function AdminSidebar() {
     <aside className="admin-sidebar">
       <NavLink className="brand-lockup inverse" to="/admin/dashboard">
         <div className="brand-mark">Q</div>
-        <span>QuizMaster</span>
+        <span>Quorion</span>
       </NavLink>
       <nav className="sidebar-menu">
         {items.map((item) => (
@@ -55,3 +55,4 @@ export default function AdminSidebar() {
     </aside>
   );
 }
+

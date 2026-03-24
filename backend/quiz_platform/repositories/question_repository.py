@@ -1,5 +1,5 @@
 from models.question import Question
-from database.db_manager import SessionLocal
+from database.session import SessionLocal
 
 class QuestionRepository:
 

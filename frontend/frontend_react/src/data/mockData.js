@@ -30,9 +30,9 @@ export const recentQuizzes = [
 ];
 
 export const publicQuizzes = [
-  { title: "Advanced JavaScript Patterns", owner: "Admin", plays: "20k", category: "Programming", quizType: "public" },
-  { title: "Network Security Fundamentals", owner: "System Owner", plays: "15k", category: "Networking", quizType: "public" },
-  { title: "World Geography Masterclass", owner: "Admin", plays: "10k", category: "General Knowledge", quizType: "public" }
+  { quizId: "PUB-101", title: "Advanced JavaScript Patterns", owner: "Admin", plays: "20k", category: "Programming", quizType: "public" },
+  { quizId: "PUB-102", title: "Network Security Fundamentals", owner: "System Owner", plays: "15k", category: "Networking", quizType: "public" },
+  { quizId: "PUB-103", title: "World Geography Masterclass", owner: "Admin", plays: "10k", category: "General Knowledge", quizType: "public" }
 ];
 
 export const categories = [
@@ -54,32 +54,5 @@ export const leaderboardRows = [
   { rank: 13, name: "James Allen", score: 908, completion: "20m 05s", status: "Verified" },
   { rank: 14, name: "Lily Wong", score: 895, completion: "20m 30s", status: "Verified" }
 ];
-
-export const resultSummary = {
-  score: 18,
-  total: 20,
-  percentage: "90%",
-  reattemptAfter: "1 hour",
-  answers: [
-    {
-      question: "Which organelle is responsible for producing ATP through cellular respiration?",
-      yourAnswer: "B. Mitochondria",
-      correctAnswer: "B. Mitochondria",
-      status: "Correct"
-    },
-    {
-      question: "Which structure controls what enters and leaves the cell?",
-      yourAnswer: "C. Cell Wall",
-      correctAnswer: "A. Cell Membrane",
-      status: "Incorrect"
-    },
-    {
-      question: "Which molecule carries genetic information?",
-      yourAnswer: "D. DNA",
-      correctAnswer: "D. DNA",
-      status: "Correct"
-    }
-  ]
-};
 
 export const questions = Array.from({ length: 20 }, (_, index) => index + 1);

@@ -1,5 +1,5 @@
-import socket
 import threading
+from socket import AF_INET, SOCK_STREAM, SOL_SOCKET, SO_REUSEADDR, socket, timeout
 
 from server.client_handler import handle_client
 
@@ -17,8 +17,8 @@ def start_server(host, port):
         if _is_running:
             return
 
-        _server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        _server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        _server_socket = socket(AF_INET, SOCK_STREAM)
+        _server_socket.setsockopt(SOL_SOCKET, SO_REUSEADDR, 1)
         _server_socket.bind((host, port))
         _server_socket.listen(100)
         _server_socket.settimeout(1.0)
@@ -36,7 +36,7 @@ def accept_connections(server_socket):
     while _is_running:
         try:
             client_socket, _client_address = server_socket.accept()
-        except socket.timeout:
+        except timeout:
             continue
         except OSError:
             break

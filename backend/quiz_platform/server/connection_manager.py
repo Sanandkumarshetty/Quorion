@@ -1,6 +1,8 @@
 import threading
 from socket import SHUT_RDWR
 
+from utils.binary_protocol import send_framed_message
+
 
 _lock = threading.RLock()
 _student_connections = {}
@@ -9,23 +11,16 @@ _socket_to_identity = {}
 
 
 def _send_message(client_socket, message):
-    data = message.encode("utf-8")
-    total_sent = 0
-
-    while total_sent < len(data):
-        sent = client_socket.send(data[total_sent:])
-        if sent == 0:
-            raise OSError("socket connection broken")
-        total_sent += sent
+    if not isinstance(message, dict):
+        raise TypeError("socket-message-must-be-dictionary")
+    send_framed_message(client_socket, message)
 
 
 def _safe_send(client_socket, message):
-    if not isinstance(message, str):
-        message = str(message)
     try:
         _send_message(client_socket, message)
         return True
-    except OSError:
+    except (OSError, TypeError, ValueError):
         return False
 
 

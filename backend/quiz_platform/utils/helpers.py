@@ -1,33 +1,3 @@
-import json
-import uuid
-
-
-def generate_unique_id():
-    return str(uuid.uuid4())
-
-
-def parse_message(data):
-    if isinstance(data, bytes):
-        data = data.decode("utf-8", errors="ignore")
-
-    if data is None:
-        return {}
-
-    data = str(data).strip()
-    if not data:
-        return {}
-
-    try:
-        message = json.loads(data)
-    except json.JSONDecodeError:
-        return {"action": "invalid", "payload": {"reason": "invalid-json"}}
-
-    if not isinstance(message, dict):
-        return {"action": "invalid", "payload": {"reason": "object-required"}}
-
-    return message
-
-
 def format_leaderboard(leaderboard_data):
     rows = []
     for index, entry in enumerate(leaderboard_data or [], start=1):
@@ -52,7 +22,3 @@ def format_leaderboard(leaderboard_data):
         row["rank"] = index
 
     return rows
-
-
-def create_response_message(type, payload):
-    return json.dumps({"type": type, "payload": payload}) + "\n"

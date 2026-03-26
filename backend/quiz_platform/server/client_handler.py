@@ -1,4 +1,3 @@
-import json
 import threading
 
 from quiz_runtime.leaderboard import get_leaderboard
@@ -10,36 +9,15 @@ from server.connection_manager import (
     broadcast_to_students,
     remove_connection,
 )
-from utils.helpers import create_response_message, parse_message
+from utils.binary_protocol import recv_framed_message, send_framed_message
 from utils.timer import get_remaining_time, start_timer
 
 
 _sessions_lock = threading.RLock()
 _sessions = {}
 
-
-def _parse_message(raw_data):
-    return parse_message(raw_data)
-
-
-def _build_response(message_type, payload):
-    return create_response_message(message_type, payload)
-
-
-def _send_message(client_socket, message):
-    data = message.encode("utf-8")
-    total_sent = 0
-
-    while total_sent < len(data):
-        sent = client_socket.send(data[total_sent:])
-        if sent == 0:
-            raise OSError("socket connection broken")
-        total_sent += sent
-
-
 def _send(client_socket, message_type, payload):
-    response = _build_response(message_type, payload)
-    _send_message(client_socket, response)
+    send_framed_message(client_socket, {"type": message_type, "payload": payload})
 
 
 def _get_or_create_session(quiz_id):
@@ -103,39 +81,31 @@ def _calculate_leaderboard(quiz_id):
 
 
 def handle_client(client_socket):
-    buffer = ""
     try:
         while True:
-            data = client_socket.recv(4096)
-            if not data:
+            message = recv_framed_message(client_socket)
+            if message is None:
                 break
 
-            buffer += data.decode("utf-8", errors="ignore")
-            while "\n" in buffer:
-                line, buffer = buffer.split("\n", 1)
-                message = _parse_message(line)
-                if not message:
-                    continue
+            action = message.get("action")
+            message["_client_socket"] = client_socket
 
-                action = message.get("action")
-                message["_client_socket"] = client_socket
+            if action == "login":
+                payload = process_login(message)
+            elif action == "join_quiz":
+                payload = process_join_quiz(message)
+            elif action == "answer":
+                payload = process_answer(message)
+            elif action == "submit":
+                payload = process_submit(message)
+            elif action == "leaderboard":
+                quiz_id = message.get("payload", {}).get("quiz_id")
+                payload = {"ok": True, "leaderboard": _calculate_leaderboard(quiz_id)}
+            else:
+                payload = {"ok": False, "error": f"unknown-action:{action}"}
 
-                if action == "login":
-                    payload = process_login(message)
-                elif action == "join_quiz":
-                    payload = process_join_quiz(message)
-                elif action == "answer":
-                    payload = process_answer(message)
-                elif action == "submit":
-                    payload = process_submit(message)
-                elif action == "leaderboard":
-                    quiz_id = message.get("payload", {}).get("quiz_id")
-                    payload = {"ok": True, "leaderboard": _calculate_leaderboard(quiz_id)}
-                else:
-                    payload = {"ok": False, "error": f"unknown-action:{action}"}
-
-                _send(client_socket, "response", payload)
-    except OSError:
+            _send(client_socket, "response", payload)
+    except (OSError, ValueError, TypeError):
         pass
     finally:
         disconnect_client(client_socket)
@@ -181,14 +151,14 @@ def process_join_quiz(message):
             session["total_questions"][student_id] = int(total_questions)
 
     broadcast_to_admins(
-        _build_response(
-            "event",
-            {
+        {
+            "type": "event",
+            "payload": {
                 "event": "student_joined",
                 "quiz_id": quiz_id,
                 "student_id": student_id,
             },
-        )
+        }
     )
     return {"ok": True, "quiz_id": quiz_id, "student_id": student_id}
 
@@ -221,10 +191,10 @@ def process_answer(message):
 
     leaderboard = _calculate_leaderboard(quiz_id)
     broadcast_to_admins(
-        _build_response(
-            "event",
-            {"event": "leaderboard_update", "quiz_id": quiz_id, "rows": leaderboard},
-        )
+        {
+            "type": "event",
+            "payload": {"event": "leaderboard_update", "quiz_id": quiz_id, "rows": leaderboard},
+        }
     )
 
     return {"ok": True, "saved": True, "leaderboard": leaderboard}
@@ -261,10 +231,10 @@ def process_submit(message):
     end_session(session)
 
     leaderboard = _calculate_leaderboard(quiz_id)
-    leaderboard_message = _build_response(
-        "event",
-        {"event": "leaderboard_update", "quiz_id": quiz_id, "rows": leaderboard},
-    )
+    leaderboard_message = {
+        "type": "event",
+        "payload": {"event": "leaderboard_update", "quiz_id": quiz_id, "rows": leaderboard},
+    }
     broadcast_to_students(leaderboard_message)
     broadcast_to_admins(leaderboard_message)
 

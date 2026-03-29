@@ -2,13 +2,13 @@
 
 ## Overview
 
-Quorion is a quiz platform with a React frontend, a Flask API, a Python backend, SQLite persistence, and an internal TCP socket layer for quiz-session events.
+Quorion is a quiz platform with a React frontend, a thin Flask HTTP gateway, a TLS-secured TCP application server, and SQLite persistence.
 
 The current application flow is:
 - React + Vite for the UI
-- Flask for browser-facing HTTP APIs under `/api`
+- Flask as a browser-facing HTTP gateway under `/api`
+- TLS-secured TCP socket server as the main backend processing layer
 - SQLAlchemy + SQLite for persistence
-- TCP socket server for backend quiz session communication started together with the Flask app
 - Backend repository and management layers for auth, quiz creation, question handling, submissions, and leaderboard/session logic
 
 ## Core Features
@@ -60,9 +60,9 @@ The current application flow is:
 - Vite
 
 ### Backend
-- Flask API for browser requests
-- Python repository and management layers
-- Internal TCP socket server for quiz join, answer, submit, and leaderboard event syncing
+- Flask gateway for browser HTTP requests
+- TLS-secured TCP socket server for auth, quiz, submission, and leaderboard processing
+- Python repository and management layers behind the TCP server
 
 ### Database
 - SQLite
@@ -74,6 +74,7 @@ The current application flow is:
 D:\Quorion
 |-- backend\quiz_platform\
 |   |-- auth\
+|   |-- certs\
 |   |-- database\
 |   |-- models\
 |   |-- quiz_management\
@@ -104,8 +105,8 @@ Run from the project root:
 ```
 
 This starts:
-- Flask API on `http://127.0.0.1:5000`
-- TCP socket server on port `12000`
+- Flask gateway on `http://127.0.0.1:5000`
+- TLS-secured TCP application server on port `12000`
 
 ### 2. Frontend
 
@@ -145,10 +146,11 @@ cd ..\..
 
 ## API Notes
 
-- Flask registers routes under `/api`
+- Flask registers routes under `/api` and forwards them to the TCP server
 - Opening `http://127.0.0.1:5000/` directly will show `Not Found` unless you add a root route
 - The React frontend talks to Flask through the Vite dev proxy during development
-- The backend then syncs quiz-session events through the TCP layer internally
+- Flask forwards browser requests to the TCP server as framed binary messages over TLS
+- The TCP server performs the business logic and database work, then sends the result back to Flask
 
 ## Important Implementation Notes
 
@@ -157,7 +159,8 @@ cd ..\..
 - Public quiz sessions do not continuously poll while a student is idle
 - Admin leaderboard refreshes periodically for live monitoring
 - Student private leaderboard shows submitted participants only
-- The app keeps browser behavior the same while internally using TCP for backend quiz-event communication
+- Browser requests still use HTTP, but backend processing now happens through a TLS-secured TCP server
+- Internal TCP communication uses a custom framed binary protocol with explicit payload lengths
 
 ## Multi-Client Testing
 
@@ -175,8 +178,24 @@ To test with multiple devices on the same network:
 - `repositories/*` as the active repository abstraction layer
 - `quiz_management/*` for quiz and question management
 - `quiz_runtime/*` for evaluation, session, and leaderboard support
-- `server/*` for TCP socket handling
-- `utils/*` for message formatting and timer utilities
+- `server/*` for the TLS TCP server, live session handling, and HTTP request dispatching
+- `utils/*` for binary framing, TLS-adjacent socket helpers, and timer utilities
+
+## Request Flow
+
+- Browser sends an HTTP request to Flask under `/api`
+- Flask forwards method, path, headers, and body to the TCP server
+- The TCP server receives a framed binary message over TLS
+- The TCP server executes auth, quiz, submission, or leaderboard logic
+- SQLAlchemy reads or updates SQLite as needed
+- The TCP server sends a response back to Flask
+- Flask returns the final HTTP response to the browser
+
+## Security
+
+- Internal Flask-to-TCP communication is protected with SSL/TLS using Python's `ssl` module
+- Development certificate files are stored in `backend\quiz_platform\certs\`
+- The TCP server loads the certificate and private key before accepting secure connections
 
 ## Database Entities
 

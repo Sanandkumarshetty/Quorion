@@ -35,12 +35,6 @@ def add_student_to_session(session, student_id):
     return session
 
 
-def remove_student_from_session(session, student_id):
-    with session["lock"]:
-        session["students"].discard(student_id)
-    return session
-
-
 def record_answer(session, student_id, question_id, answer):
     with session["lock"]:
         session["answers"].setdefault(student_id, {})

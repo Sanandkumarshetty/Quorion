@@ -100,3 +100,4 @@ pnpm-debug.log*
 # Project-generated artifacts
 quiz_platform.db
 *.zip
+backend/quiz_platform/certs/tcp_server_key.pem

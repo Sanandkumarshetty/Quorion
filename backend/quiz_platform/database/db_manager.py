@@ -21,23 +21,3 @@ def create_database():
     from models.submission import Submission
     from models.answer import Answer
     Base.metadata.create_all(bind=engine)
-
-
-def get_connection():
-    """Return a raw database connection from the engine"""
-    return engine.connect()
-
-
-def close_connection(connection):
-    """Close database connection"""
-    connection.close()
-
-
-def commit_changes(connection):
-    """Commit database transactions"""
-    connection.commit()
-
-
-def rollback_changes(connection):
-    """Rollback failed transactions"""
-    connection.rollback()

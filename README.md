@@ -94,6 +94,15 @@ D:\Quorion
 `-- README.md
 ```
 
+## Setup
+
+### Python dependencies
+
+```powershell
+.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+```
+
 ## Run Commands
 
 ### 1. Backend
@@ -127,14 +136,6 @@ cd frontend\frontend_react
 npm run dev -- --host 0.0.0.0
 ```
 
-## Setup
-
-### Python dependencies
-
-```powershell
-.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
-```
 
 ### Frontend dependencies
 
@@ -196,6 +197,89 @@ To test with multiple devices on the same network:
 - Internal Flask-to-TCP communication is protected with SSL/TLS using Python's `ssl` module
 - Development certificate files are stored in `backend\quiz_platform\certs\`
 - The TCP server loads the certificate and private key before accepting secure connections
+- Browser-to-Flask traffic is plain HTTP in local development unless you place Flask behind HTTPS separately
+- Passwords are stored using PBKDF2-SHA256 hashing
+- Login issues a signed token that is used as a Bearer token for protected routes
+
+## Startup Behavior
+
+- Starting `frontend\flask_api\app.py` also creates database tables if they do not exist yet
+- The same startup path also launches the internal TCP server automatically
+- Flask runs on `0.0.0.0:5000` in debug mode when started directly
+- The TCP server listens on `0.0.0.0:12000`
+
+## Environment Variables
+
+- `QUIZ_TCP_HOST`: TCP target host used by Flask bridge, default `127.0.0.1`
+- `QUIZ_TCP_PORT`: TCP target port used by Flask bridge, default `12000`
+- `QUIZ_TCP_TIMEOUT`: TCP socket timeout in seconds, default `2.0`
+- `QUIZ_TCP_TLS_CA_CERT`: CA/cert path used by the Flask bridge to trust the TCP server certificate
+- `QUIZ_TCP_TLS_CERT`: certificate path loaded by the TCP server
+- `QUIZ_TCP_TLS_KEY`: private key path loaded by the TCP server
+- `QUIZ_PLATFORM_TOKEN_SECRET`: secret used to sign auth tokens
+- `VITE_API_PROXY_TARGET`: Vite proxy target for `/api`, default `http://127.0.0.1:5000`
+
+## Authentication Notes
+
+- Supported roles are `admin` and `student`
+- Auth session data is stored in browser local storage by the frontend
+- Protected frontend pages require a valid role-based session
+- Token validation is handled by the backend before protected quiz/admin actions
+- Token TTL is currently 24 hours
+
+## API Surface
+
+- `GET /api/health`
+- `POST /api/auth/register`
+- `POST /api/auth/login`
+- `POST /api/auth/validate`
+- `GET /api/quizzes/public`
+- `GET /api/quizzes/admin`
+- `POST /api/quizzes`
+- `POST /api/quizzes/join`
+- `GET /api/quizzes/{quiz_id}`
+- `PUT /api/quizzes/{quiz_id}`
+- `DELETE /api/quizzes/{quiz_id}`
+- `POST /api/quizzes/{quiz_id}/answers`
+- `POST /api/quizzes/{quiz_id}/submit`
+- `GET /api/quizzes/{quiz_id}/leaderboard`
+- `GET /api/quizzes/{quiz_id}/results/export`
+- `GET /api/results/me`
+
+## Quiz Timing and Attempt Logic
+
+- Private quizzes use the quiz's shared scheduled `startAt`
+- Public quizzes are always exposed to students as immediately available
+- Public quiz timing is per-attempt: the countdown is based on when the student's submission record is created
+- Private quiz timing is shared around the quiz schedule, but submission completion time is still stored per student
+- If a public attempt times out, the backend finalizes it automatically on the next relevant request
+- Rejoining a public quiz after finishing starts a fresh attempt
+- Rejoining a submitted private quiz does not create a new attempt
+
+## Result and Leaderboard Logic
+
+- Student leaderboard access is restricted to private quizzes and only after full submission
+- Admin leaderboard views can include live in-progress attempts
+- Leaderboard ranking is sorted by score, then progress, then faster completion time, then student name
+- Exported results are returned as CSV
+- Exporting a private quiz result CSV deletes that private quiz and its related records
+
+## Data Model
+
+- `users`: stores admin/student accounts
+- `quizzes`: stores title, category, owner, privacy, password, duration, and optional start time
+- `questions`: stores the text, four options, and the correct answer key
+- `submissions`: stores one attempt record, score, submission timestamp, and completion time
+- `answers`: stores selected options for each question within a submission
+
+## Development Notes
+
+- The backend uses SQLAlchemy ORM with SQLite at the project root
+- There are two backend layers related to quiz persistence:
+- `database/*` contains the lower-level SQLAlchemy functions
+- `repositories/*` contains the active repository abstraction used by the dispatcher/services
+- Flask is a thin gateway and most quiz logic lives in `backend\quiz_platform\server\http_dispatcher.py`
+- The React frontend calls `/api` and relies on the Vite dev proxy during local development
 
 ## Database Entities
 

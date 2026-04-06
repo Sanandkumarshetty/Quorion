@@ -34,7 +34,7 @@ def start_server(host, port):
         _server_socket = socket(AF_INET, SOCK_STREAM)
         _server_socket.setsockopt(SOL_SOCKET, SO_REUSEADDR, 1)
         _server_socket.bind((host, port))
-        _server_socket.listen(100)
+        _server_socket.listen(100)#maximium number of queued connections
         _server_socket.settimeout(1.0)
         _is_running = True
         tls_context = _create_tls_context()

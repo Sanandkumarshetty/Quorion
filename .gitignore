@@ -40,6 +40,7 @@ node_modules/
 dist/
 build/
 .vite/
+.vite-temp/
 dist-ssr/
 
 # Lock unnecessary local files
